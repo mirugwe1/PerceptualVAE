@@ -1,9 +1,7 @@
 # Perceptually Augmented VAEs for Chest Radiograph Anomaly Detection
 
-Code for *"Perceptually Augmented VAEs: The Reconstruction-Detection Paradox
-in Chest Radiograph Anomaly Detection"* (submitted to ISBI 2027).
 
-The paper asks whether the choice of perceptual representation used to
+The project asks whether the choice of perceptual representation used to
 supervise a VAE's reconstruction objective changes how useful the
 reconstruction residual is for anomaly detection. It trains one VAE
 architecture seven ways, a pixel-only control plus six perceptual variants
@@ -239,6 +237,3 @@ xxx
 
 We acknowledge support from the Queensland University of Technology (QUT) through its provision of subsidised access to specialised research infrastructure including HPC, and the eResearch team at QUT for providing expertise in enablement of this project.
 
-## License
-
-MIT. See [LICENSE](LICENSE).
