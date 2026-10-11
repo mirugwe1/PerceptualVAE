@@ -1,6 +1,5 @@
 # Perceptually Augmented VAEs for Chest Radiograph Anomaly Detection
 
-
 The project asks whether the choice of perceptual representation used to
 supervise a VAE's reconstruction objective changes how useful the
 reconstruction residual is for anomaly detection. It trains one VAE
@@ -145,12 +144,12 @@ To add another backbone, copy a stage folder, change `experiment.name`,
 `paths.output_root`, and `loss.perceptual.backbone`. `common/perceptual.py`
 also registers `densenet_imagenet` and `densenet_cxr`.
 
-## Departures from the MorphAEus reproduction, and why
+## Design choices, and why
 
-This project started from a reproduction of MorphAEus (Bercea et al., 2022)
-as a baseline, and diverged from it in ways that matter for anomaly
-detection specifically. The departures below establish why the control here
-is not simply "the published numbers."
+A few choices here depart from common practice for VAE-based anomaly
+detection, for reasons that matter specifically for detection rather than
+for reconstruction quality alone. They're listed below next to the code that
+implements each one.
 
 ### Benchmark validity comes first
 
@@ -178,9 +177,9 @@ before any model is trained.
 - **Sigma-normalised residuals**, so the score is not dominated by regions
   the model was never going to predict.
 
-### Model changes
+### Model choices
 
-| | Reproduction | Here | Why |
+| | Common setup | Here | Why |
 |---|---|---|---|
 | Normalisation | none | GroupNorm/InstanceNorm | BatchNorm would make a per-sample score depend on the batch |
 | Bias | disabled | enabled | no reason to omit once norm is affine |
@@ -188,11 +187,10 @@ before any model is trained.
 | Upsampling | ConvTranspose | resize + conv available | transposed-conv artifacts land in the residual map used for localisation |
 | Variance | fixed at 1 | optional per-pixel sigma head (off by default) | rib margins and the diaphragm would otherwise dominate a raw residual |
 | Depth | plain conv stack | residual blocks per scale | depth without lengthening the stride-2 path |
-| KL bug | double exponentiation kept | fixed | it was kept only for reproduction |
 
 ### Objective
 
-The reproduction sums reconstruction over pixels (order 1.5e4) and KL over
+A common setup sums reconstruction over pixels (order 1.5e4) and KL over
 dimensions, which makes every weight resolution-dependent. Here
 reconstruction is a per-pixel mean, KL is summed then divided by the pixel
 count, and the perceptual term is a mean over feature maps (Eq. 2 in the
@@ -237,3 +235,4 @@ xxx
 
 We acknowledge support from the Queensland University of Technology (QUT) through its provision of subsidised access to specialised research infrastructure including HPC, and the eResearch team at QUT for providing expertise in enablement of this project.
 
+\
