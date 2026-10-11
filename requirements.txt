@@ -1,0 +1,17 @@
+torch
+torchvision
+numpy
+scikit-learn
+pyyaml
+matplotlib
+pillow
+tqdm
+tensorboard
+lpips
+
+# only needed for stage6_resnet_cxr / stage6_resnet_cxr_rsna
+torchxrayvision
+
+# only needed for stage7_raddino / stage7_raddino_rsna (RAD-DINO)
+transformers
+huggingface_hub

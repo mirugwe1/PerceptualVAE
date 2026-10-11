@@ -1,0 +1,43 @@
+#!/bin/bash -l
+#PBS -N mean_baseline
+#PBS -l select=1:ncpus=6:mem=24gb
+#PBS -l walltime=03:00:00
+#PBS -m abe
+#PBS -M you@your-institution.edu
+#PBS -j oe
+
+# No GPU requested. The baseline has no model in it: it averages the training
+# normals and scores the absolute difference, so a GPU would sit idle and the
+# job would queue behind GPU work for no reason.
+#
+# Submit from EITHER stage folder:
+#     cd stage1_vae       && qsub ../common/mean_baseline.aqua
+#     cd stage1_vae_rsna  && qsub ../common/mean_baseline.aqua
+#
+# The output name is derived from the config, so the two runs cannot
+# overwrite each other.
+
+cd $PBS_O_WORKDIR
+source ~/venvs/perceptual-vae/bin/activate
+
+echo "Job started: $(date)"
+echo "Working directory: $PBS_O_WORKDIR"
+
+NAME=$(python - <<'PY'
+import sys
+sys.path.insert(0, "../common")
+from utils import load_config
+cfg = load_config("config.yaml")
+print(cfg["data"].get("module", "covid"))
+PY
+)
+OUT="mean_baseline_${NAME}.json"
+echo "Dataset module: $NAME   ->   $OUT"
+
+python ../common/mean_image_baseline.py --config config.yaml --out "$OUT"
+
+echo ""
+echo "=== result ==="
+cat "$OUT" 2>/dev/null | head -60
+echo ""
+echo "Job finished: $(date)"

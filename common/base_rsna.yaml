@@ -1,0 +1,167 @@
+# common/base_rsna.yaml -- shared by every RSNA stage.
+#
+# A separate base from base.yaml because the dataset, the loader and the
+# available ground truth all differ. Keeping them apart means a run's
+# config.resolved.yaml unambiguously records which benchmark produced it.
+#
+# WHY THIS DATASET. On the COVID-19 Radiography Database a logistic regression
+# on 8x8 thumbnails separated Normal from Viral Pneumonia at AUROC 0.988, and
+# from the image borders alone at 0.984. Every class probed between 0.82 and
+# 0.99, and no trained model beat the probe on any class. RSNA comes from a
+# single curated collection and ships annotation boxes, so detection numbers
+# can mean something and localisation can be measured directly.
+#
+# RUN controls.py FIRST. Single-source removes the repository confound, not
+# the clinical one. See the metadata probe.
+
+experiment:
+  name: base_rsna
+  seed: 60
+  device: cuda
+  deterministic: true
+
+paths:
+  data_root: "~/data/RSNA_Pneumonia"
+  output_root: "runs"
+
+data:
+  module: rsna              # selects RSNADataModule; "covid" selects the old one
+  normal_class: Normal
+  # "Lung Opacity" carries boxes. "No Lung Opacity / Not Normal" is abnormal
+  # in some other way with no boxes, and evaluating it asks whether the
+  # detector finds pneumonia specifically or merely an untidy film.
+  pathology_classes: ["Lung Opacity", "No Lung Opacity / Not Normal"]
+  image_size: 128
+  channels: 1
+  train_split: 0.8          # Normal is 8,851 -> about 7,084 / 877 / 890
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 5
+  # RSNA ships no lung segmentations. The loader raises if this is true.
+  # The annotation boxes are ground TRUTH and must never restrict the score.
+  use_masks: false
+  # Decoding 26k DICOMs every epoch is wasteful; the first pass writes uint8
+  # arrays at image_size. Set to null to disable.
+  cache_dir: "~/data/RSNA_Pneumonia/cache_128"
+
+model:
+  # Five stride-2 ConvBlocks: 128 -> 64 -> 32 -> 16 -> 8 -> 4, widening
+  # 32, 64, 128, 256, 256. Each block is Conv2d(k4,s2,p1), InstanceNorm2d,
+  # LeakyReLU. The decoder mirrors it exactly.
+  #
+  # Five stages rather than four because the collapse convolution appears
+  # three times (mu, logvar, decoder launch) and its cost scales with the
+  # square of the remaining grid. Stopping at 8x8 needs a k8 kernel and puts
+  # 82 percent of the model into those three layers; stopping at 4x4 needs k4
+  # and puts 31 percent there.
+  channels: [32, 64, 128, 256] #[32, 64, 128, 256, 256]
+  leaky_slope: 0.2
+
+  latent:
+    kind: global            # a spatial latent is rejected by this architecture
+    # 4x4x256 = 4,096 values collapse to 128, a 32:1 bottleneck, via two
+    # independent k4 convolutions for mu and logvar.
+    #
+    # 128 rather than 256: the bottleneck is the mechanism the detector relies
+    # on, and across this project the variant with the WORST reconstructions
+    # detected best. At z=256 the per-dimension KL previously settled near
+    # 2.35 nats against a 0.5 free-bits floor, so halving still leaves ample
+    # capacity. NOTE that halving also roughly halves the KL term, so check
+    # share_kl in the epoch-1 log and raise loss.beta if it falls well below
+    # 10 percent.
+    z_dim: 256
+
+  # sigmoid | identity. The data lies in [0,1] and the rest of the pipeline
+  # assumes it: SSIM uses data_range 1.0, LPIPS expects [0,1], the perceptual
+  # backbones normalise from it, and visualize.py draws with vmin 0, vmax 1.
+  # identity reproduces the reference summary but forces a clamping decision
+  # inside each of those, and every such decision changes what is measured.
+  output_activation: sigmoid
+
+  # transpose | resize. Transposed convolutions can leave periodic artifacts,
+  # and those land in the residual map the anomaly score reads. Look for a
+  # grid pattern in the qualitative figures; if one appears, switch to resize
+  # (nearest-neighbour upsample then 3x3 conv), which cannot produce it.
+  decoder_upsample: transpose
+
+  # OFF: no per-pixel uncertainty head. The reconstruction gradient scales as
+  # one over the predicted variance, and the model predicted high variance
+  # exactly over ribs and lung borders, so it was permitted to stop trying on
+  # the most informative structure. Removing it gained 0.076 AUROC and cut
+  # FPR@95 from 0.832 to 0.566.
+  predict_sigma: false
+  sigma_min: 0.01           # unused while predict_sigma is false
+  sigma_max: 1.0
+
+loss:
+  recon: mse
+  # Carried over from the COVID runs, where mse put KL at roughly 11 percent
+  # of the objective. The residual scale may differ here, so CHECK share_kl in
+  # the epoch-1 log and rescale beta if it is far from 10 to 15 percent.
+  beta: 0.01
+  free_bits: 0.5
+  kl_warmup_epochs: 20
+  perceptual:
+    enabled: false
+    backbone: vgg19_imagenet
+    layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+    layer_weights: null
+    distance: l2
+    weight: 0.001
+    normalize_layers: true
+    checkpoint: null
+    normalization: null
+
+training:
+  batch_size: 128
+  learning_rate: 0.0005
+  min_learning_rate: 1.0e-6
+  max_epochs: 500           # also sets the cosine schedule length (T_max)
+  amp: false
+  weight_decay: 0.0
+  clip_grad_norm: 1.0
+  checkpoint_every: 50
+  early_stopping:
+    patience: 25
+    min_delta: 1.0e-5      # effectively never fires; the confirmed setting
+    monitor: val_total
+
+scoring:
+  poolings: [mean, top10, top5, top1, max]
+  # mean and top10 were consistently strongest on the previous dataset and
+  # their intervals always overlapped; top1 never won. RSNA boxes cover about
+  # a fifth of a frame, so mean should suit it too.
+  primary: pixel/mean
+  use_lung_mask: false      # no lung masks; the score reads the whole frame
+  normalize_by_sigma: false
+  recon_samples: 1
+  # ------------------------------------------------------------------------
+  # FEATURE-SPACE SCORING (evaluation only, no retraining)
+  #
+  # When true, evaluate.py additionally scores the residual in a frozen
+  # backbone's feature space and reports feature/mean, feature/top10 and so on
+  # alongside the pixel/* scores, so both are measured in one run.
+  #
+  # Note that the backbone is a MEASUREMENT here, not a training loss, and
+  # that inverts which backbones are useful. A network fine-tuned to
+  # discriminate Normal from pathology develops features that amplify the
+  # difference between them, which is harmful in a loss and exactly right in
+  # a distance metric.
+  #
+  # feature_checkpoint and feature_normalization are read only by the
+  # vgg19_cxr backbone. As with the perceptual loss, finetune_vgg_cxr.py
+  # applied NO normalization, so identity reproduces the range it was trained
+  # on; ImageNet statistics would feed it roughly five times that range.
+  feature_space: false
+  feature_backbone: vgg19_cxr
+  feature_layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+  feature_checkpoint: "~/models/vgg19_cxr_finetune/runs/vgg19_cxr_finetune/20260908_162920/checkpoints/best_features.pt"
+  feature_normalization: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+
+evaluation:
+  metrics: [ssim, ms_ssim, haarpsi, gmsd, dists, lpips, psnr, auroc, auprc, fpr95, fpr99]
+  batch_size: 64
+  bootstrap: 1000
+  # Cap the images used for pixel-level localisation if memory is tight.
+  # null uses all of them; 9,555 maps at 128x128 in float16 is about 310 MB.
+  pixel_max_images: null

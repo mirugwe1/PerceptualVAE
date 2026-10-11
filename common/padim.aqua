@@ -1,0 +1,40 @@
+#!/bin/bash -l
+#PBS -N padim_baseline
+#PBS -l select=1:ncpus=6:ngpus=1:mem=34gb
+#PBS -l walltime=04:00:00
+#PBS -m abe
+#PBS -M you@your-institution.edu
+#PBS -j oe
+
+# ======================= THE ONLY LINE YOU EDIT =======================
+BACKBONE="resnet50_imagenet"     # or rad_dino, resnet_cxr, vgg19_imagenet
+# ======================================================================
+#
+#     cd stage1_vae       && qsub ../common/padim.aqua
+#     cd stage1_vae_rsna  && qsub ../common/padim.aqua
+#
+# A GPU IS requested here, unlike the mean-image baseline: this makes two
+# full passes of a frozen backbone over every image, which is the same cost
+# as one evaluation of a trained model. There is still no training.
+
+cd $PBS_O_WORKDIR
+source ~/venvs/perceptual-vae/bin/activate
+
+echo "Job started: $(date)"
+echo "Backbone: $BACKBONE"
+nvidia-smi
+
+NAME=$(python - <<'PY'
+import sys; sys.path.insert(0, "../common")
+from utils import load_config
+print(load_config("config.yaml")["data"].get("module", "covid"))
+PY
+)
+OUT="padim_${BACKBONE}_${NAME}.json"
+echo "Dataset: $NAME   ->   $OUT"
+
+python ../common/padim_baseline.py --config config.yaml \
+    --backbone "$BACKBONE" --out "$OUT"
+
+echo ""
+echo "Job finished: $(date)"

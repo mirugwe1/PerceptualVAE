@@ -1,0 +1,31 @@
+# Stage 2: perceptual term, stock ImageNet VGG-19
+# Differs from stage 3 ONLY in the backbone weights, which is what lets a
+# difference between the two be attributed to pretraining domain rather
+# than to architecture.
+#
+#   cd stage2_vgg19
+#   qsub train_vae.aqua
+#   qsub eval_vae.aqua
+
+_base_: ../common/base.yaml
+
+experiment:
+  name: vae_vgg19_imagenet
+
+paths:
+  # Each stage keeps its own runs/ folder beside this config.
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: vgg19_imagenet
+    layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+    weight: 0.001
+
+training:
+  # VGG-19's relu1_2 at 128x128 is a large activation and the loss holds
+  # one copy for the reconstruction and one for the target. Drop to 32 if
+  # this runs out of GPU memory: shrinking the batch preserves what the
+  # loss measures, whereas dropping relu1_2 would not.
+  batch_size: 48

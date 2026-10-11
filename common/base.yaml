@@ -1,0 +1,223 @@
+# common/base.yaml -- shared by every COVID-19 Radiography stage.
+#
+# Each stage's config.yaml does `_base_: ../common/base.yaml` and overrides
+# only what differs. The whole experiment rests on the stages being identical
+# except in one place, and a config format that forced you to restate
+# everything would make accidental divergence easy.
+#
+# ---------------------------------------------------------------------------
+# ARCHITECTURE REVISION: the residual VAE specified by the supervisor.
+#
+#   32, 64, 128, 256, 512 across five stride-2 residual blocks, a stride-4
+#   convolution collapsing 4x4 to 1x1 (not a global average pool, which would
+#   discard position), a Linear head emitting mu and logvar, and a 128
+#   dimensional latent. 14,476,289 parameters, up from 7,694,498.
+#
+#   EVERY EARLIER RESULT BELONGS TO THE PREVIOUS ARCHITECTURE. Stage 1 at
+#   0.901, stage 2 at 0.856 and stage 3 at 0.814 were produced by the
+#   7.7M-parameter model with z_dim 256, and are not comparable to anything
+#   produced after this edit. All three stages need re-running.
+#
+# EARLIER REVISIONS, retained:
+#   The per-pixel uncertainty head is OFF. The reconstruction gradient scales
+#   as one over the predicted variance, and the model predicted high variance
+#   exactly over ribs and lung borders, so it was permitted to stop trying on
+#   the most informative structure. Removing it gained 0.076 AUROC and cut
+#   FPR@95 from 0.832 to 0.566.
+#
+#   recon_samples is 1 (deterministic decode from mu). Averaging stochastic
+#   posterior draws smooths away the extreme pixels the fine poolings read.
+#
+#   amp is off, matching the earlier runs and removing one uncontrolled
+#   variable from fifteen-minute jobs.
+#
+#   deterministic is on. Two identically-configured runs once differed by
+#   0.036 AUROC, which is larger than several differences that had been
+#   treated as meaningful.
+# ---------------------------------------------------------------------------
+
+experiment:
+  name: base
+  seed: 60 #42
+  device: cuda
+  deterministic: true       # repeat runs are reproducible; noise floor sd ~0.009
+
+paths:
+  data_root: "~/data/COVID-19_Radiography_Dataset"
+  # output_root is set per stage, so each stage keeps its own runs/ folder
+  # beside its config. See any stage's config.yaml.
+  output_root: "runs"
+
+data:
+  module: covid             # selects CXRDataModule; "rsna" selects RSNADataModule
+  normal_class: Normal
+  pathology_classes: ["COVID",Lung_Opacity, "Viral Pneumonia"]
+  image_size: 128
+  channels: 1
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 5
+  # Masks are loaded for SCORING, not for input. The model still sees the
+  # whole radiograph; only the anomaly score is restricted to the lung field.
+  use_masks: true
+  mask_dilate: 2            # a few pixels of slack around the lung boundary
+
+model:
+  # Five stride-2 ConvBlocks: 128 -> 64 -> 32 -> 16 -> 8 -> 4, widening
+  # 32, 64, 128, 256, 256. Each block is Conv2d(k4,s2,p1), InstanceNorm2d,
+  # LeakyReLU. The decoder mirrors it exactly.
+  #
+  # Five stages rather than four because the collapse convolution appears
+  # three times (mu, logvar, decoder launch) and its cost scales with the
+  # square of the remaining grid. Stopping at 8x8 needs a k8 kernel and puts
+  # 82 percent of the model into those three layers; stopping at 4x4 needs k4
+  # and puts 31 percent there.
+  channels: [32, 64, 128, 256] #[32, 64, 128, 256, 256]
+  leaky_slope: 0.2
+
+  latent:
+    kind: global            # a spatial latent is rejected by this architecture
+    # 4x4x256 = 4,096 values collapse to 128, a 32:1 bottleneck, via two
+    # independent k4 convolutions for mu and logvar.
+    #
+    # 128 rather than 256: the bottleneck is the mechanism the detector relies
+    # on, and across this project the variant with the WORST reconstructions
+    # detected best. At z=256 the per-dimension KL previously settled near
+    # 2.35 nats against a 0.5 free-bits floor, so halving still leaves ample
+    # capacity. NOTE that halving also roughly halves the KL term, so check
+    # share_kl in the epoch-1 log and raise loss.beta if it falls well below
+    # 10 percent.
+    z_dim: 256
+
+  # sigmoid | identity. The data lies in [0,1] and the rest of the pipeline
+  # assumes it: SSIM uses data_range 1.0, LPIPS expects [0,1], the perceptual
+  # backbones normalise from it, and visualize.py draws with vmin 0, vmax 1.
+  # identity reproduces the reference summary but forces a clamping decision
+  # inside each of those, and every such decision changes what is measured.
+  output_activation: sigmoid
+
+  # transpose | resize. Transposed convolutions can leave periodic artifacts,
+  # and those land in the residual map the anomaly score reads. Look for a
+  # grid pattern in the qualitative figures; if one appears, switch to resize
+  # (nearest-neighbour upsample then 3x3 conv), which cannot produce it.
+  decoder_upsample: transpose
+
+  # OFF: no per-pixel uncertainty head. The reconstruction gradient scales as
+  # one over the predicted variance, and the model predicted high variance
+  # exactly over ribs and lung borders, so it was permitted to stop trying on
+  # the most informative structure. Removing it gained 0.076 AUROC and cut
+  # FPR@95 from 0.832 to 0.566.
+  predict_sigma: false
+  sigma_min: 0.01           # unused while predict_sigma is false
+  sigma_max: 1.0
+
+loss:
+  # MUST be mse or l1 while predict_sigma is false. gaussian_nll needs a
+  # sigma head and losses.py raises without one.
+  recon: mse
+
+  # beta is dimensionless, but it is NOT transferable between reconstruction
+  # kinds OR between latent widths. Measured under mse with z_dim 256: the
+  # residual RMS is about 0.034, so the mse term lands near 0.0011 while KL
+  # stays near 0.037, making KL roughly 32x LARGER than reconstruction.
+  #
+  #   beta 1.0    -> KL is 97% of the objective (guaranteed latent collapse)
+  #   beta 0.01   -> 24%
+  #   beta 0.005  -> 14%
+  #   beta 0.004  -> ~11%      <- set here, calibrated at z_dim 256
+  #   beta 0.002  -> 6%
+  #
+  # At z_dim 128 the KL term roughly halves, so the share will fall to around
+  # 6 percent. Read share_kl in the epoch-1 log and roughly double beta if you
+  # want to hold the previous balance.
+  beta: 0.01  #originally 0.004 (180119) #0.01 (213240) #0.004 (21 3240) #0.01 (21 3240)
+
+  free_bits: 0.5   #0.5          # nats per latent dimension, stops dead dimensions
+  kl_warmup_epochs: 20 #20      # full KL pressure from step 0 collapses the latent
+
+  perceptual:
+    # Off in stage 1 (the control). Stage 2 overrides backbone to
+    # vgg19_imagenet; stage 3 overrides it to vgg19_cxr and supplies the
+    # fine-tuned checkpoint plus its normalization. The two differ ONLY in the
+    # weights, which is what lets a difference between them be attributed to
+    # pretraining domain rather than to architecture.
+    enabled: false
+    backbone: vgg19_imagenet
+    # ReLU output indices in vgg19.features, not the conv indices.
+    layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+    layer_weights: null     # null = uniform
+    distance: l2 #l2+gram  # l1, l2, l2+gram, cosine, or lpips
+    weight: 0.001   #0.001 
+    normalize_layers: true  # per-layer magnitude normalisation
+    # Only read by the vgg19_cxr backbone; stage 3 sets both of these.
+    checkpoint: null
+    normalization: null     # null falls back to ImageNet mean/std, with a
+                            # warning. finetune_vgg_cxr.py applied NO
+                            # normalization, so stage 3 must set identity.
+
+training:
+  # The widened model holds 512-channel activations at 4x4 and 8x8. If this
+  # runs out of GPU memory, drop to 64; the perceptual stages already use 48
+  # and may need 32.
+  batch_size: 128
+  learning_rate: 0.0005
+  min_learning_rate: 1.0e-6
+  # NOTE: also sets the cosine schedule length (T_max). If early stopping
+  # fires well before this, the learning rate never completes its decay.
+  max_epochs: 500
+  amp: false
+  weight_decay: 0.0         # train.py uses AdamW; wd=0 makes it plain Adam
+  clip_grad_norm: 1.0
+  checkpoint_every: 50
+  early_stopping:
+    patience: 25
+    # 1e-9 means almost any numerical wobble counts as improvement, so this
+    # effectively never fires and the run costs the full max_epochs. That is
+    # the confirmed MorphAEus setting, kept deliberately; use 1e-4 if you want
+    # early stopping to do something.
+    min_delta: 1.0e-5 #1.0e-9
+    monitor: val_total
+
+scoring:
+  poolings: [mean, top10, top5, top1, max]
+  # All five are computed in one pass, so the pooling profile is visible
+  # rather than something to re-run until it looks good. Across every
+  # deterministic run, mean and top10 were strongest and their intervals
+  # always overlapped; top1 and max never won.
+  primary: pixel/mean
+  use_lung_mask: true
+  # No sigma to normalise by while predict_sigma is false. The score is the
+  # raw absolute residual.
+  normalize_by_sigma: false
+  # 1 = deterministic decode from mu, the standard VAE evaluation convention.
+  recon_samples: 1
+  # ------------------------------------------------------------------------
+  # FEATURE-SPACE SCORING (evaluation only, no retraining)
+  #
+  # When true, evaluate.py additionally scores the residual in a frozen
+  # backbone's feature space and reports feature/mean, feature/top10 and so on
+  # alongside the pixel/* scores, so both are measured in one run.
+  #
+  # Note that the backbone is a MEASUREMENT here, not a training loss, and
+  # that inverts which backbones are useful. A network fine-tuned to
+  # discriminate Normal from pathology develops features that amplify the
+  # difference between them, which is harmful in a loss and exactly right in
+  # a distance metric.
+  #
+  # feature_checkpoint and feature_normalization are read only by the
+  # vgg19_cxr backbone. As with the perceptual loss, finetune_vgg_cxr.py
+  # applied NO normalization, so identity reproduces the range it was trained
+  # on; ImageNet statistics would feed it roughly five times that range.
+  feature_space: false
+  feature_backbone: vgg19_cxr
+  feature_layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+  feature_checkpoint: "~/models/vgg19_cxr_finetune/runs/vgg19_cxr_finetune/20260908_162920/checkpoints/best_features.pt"
+  feature_normalization: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+
+evaluation:
+  metrics: [ssim, ms_ssim, haarpsi, gmsd, dists, lpips, psnr, auroc, auprc, fpr95, fpr99]
+  batch_size: 64
+  bootstrap: 1000
+  # Only read when the dataset supplies gt_mask, which COVID does not.
+  pixel_max_images: null

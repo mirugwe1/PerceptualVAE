@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "The paper is under review; cite the repository until a DOI is assigned."
+title: "Perceptually Augmented VAEs: The Reconstruction-Detection Paradox in Chest Radiograph Anomaly Detection"
+authors:
+  - family-names: Mirugwe
+    given-names: Alex
+    affiliation: Queensland University of Technology
+preferred-citation:
+  type: conference-paper
+  title: "Perceptually Augmented VAEs: The Reconstruction-Detection Paradox in Chest Radiograph Anomaly Detection"
+  authors:
+    - family-names: Mirugwe
+      given-names: Alex
+      affiliation: Queensland University of Technology
+  year: 2027
+  conference:
+    name: "IEEE International Symposium on Biomedical Imaging (ISBI)"
+  notes: "Under review; update venue details once accepted."

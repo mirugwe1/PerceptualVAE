@@ -1,0 +1,51 @@
+# Stage 7: RAD-DINO (ViT-B/14, DINOv2, chest radiographs)
+#
+# Outside the ladder, and the most interesting variant. Two things distinguish it
+# from every other backbone here.
+#
+# SELF-SUPERVISED, NOT DISCRIMINATIVE. DINOv2 training bakes in no diagnostic
+# decision boundary, so its features describe chest anatomy rather than separating
+# diagnostic categories. Every other backbone in this study is a supervised
+# classifier, whose features are shaped to amplify between-class differences,
+# which is the opposite of what a reconstruction loss of healthy anatomy wants.
+#
+# A TRANSFORMER, NOT A CONVOLUTIONAL NETWORK. Its twelve blocks all sit at ONE
+# spatial resolution, so the layer selection spans depth rather than scale. The
+# perceptual loss is therefore measuring something structurally different from
+# the four-scale convolutional versions, and that must be said when comparing.
+#
+#   cd stage7_raddino
+#   python ../common/calibrate_perceptual_weight.py --config config.yaml   # FIRST
+#   # put the recommended value in loss.perceptual.weight, then
+#   qsub train_vae.aqua
+#   qsub eval_vae.aqua
+
+_base_: ../common/base.yaml
+
+experiment:
+  name: vae_rad_dino
+
+paths:
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: rad_dino
+    weights: microsoft/rad-dino
+    # Transformer BLOCK indices, 1 to 12, not convolutional stages.
+    layers: [3, 6, 9, 12]
+    # Patch size is 14, so the input must be a multiple of it and 128 cannot be
+    # fed directly. 224 gives a 16x16 token grid; 518 is the training resolution
+    # and gives 37x37 at roughly five times the cost. Start at 224.
+    input_size: 224
+    # PLACEHOLDER. The weight calibrated for one backbone does NOT transfer to
+    # another: every network has its own activation scale. With VGG-19 the raw
+    # perceptual term sat at 0.410 against a reconstruction term of 0.0039, a
+    # 105x mismatch, and w = 0.5 put it at 98 percent of the objective, left the
+    # KL term at 0.1 percent, disabled the information bottleneck and cost 0.08
+    # to 0.10 AUROC. Run the calibration script and replace this value.
+    weight: 0.00141
+
+training:
+  batch_size: 32

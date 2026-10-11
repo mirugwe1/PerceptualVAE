@@ -1,0 +1,47 @@
+# Stage 3: perceptual term, your chest X-ray fine-tuned VGG-19
+# Identical to stage 2 except the backbone weights.
+#
+# BEFORE RUNNING THIS, inspect the checkpoint:
+#   cd stage3_vgg19_cxr
+#   python ../common/perceptual.py --inspect <the checkpoint path below>
+#
+#   cd stage3_vgg19_cxr
+#   qsub train_vae.aqua
+#   qsub eval_vae.aqua
+
+_base_: ../common/base.yaml
+
+experiment:
+  name: vae_vgg19_cxr
+
+paths:
+  # Each stage keeps its own runs/ folder beside this config.
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: vgg19_cxr
+    layers: [relu1_2, relu2_2, relu3_4, relu4_4]
+    weight: 0.001
+
+    # Weights from your fine-tuning run. Adjust the timestamp if you retrain.
+    checkpoint: "~/models/vgg19_cxr_finetune/runs/vgg19_cxr_finetune/20260908_162920/checkpoints/best_features.pt"
+
+    # MUST match the statistics vgg_cxr_finetune normalised with. This
+    # cannot be recovered from the weights, and getting it wrong does NOT
+    # raise: it silently shifts every feature map, and this stage then
+    # measures something other than what it claims.
+    #
+    # The --inspect command above reports the detected input channel count
+    # and dumps any config stored in the checkpoint, which is where those
+    # statistics may be recorded. If it reports 1 channel this field is
+    # REQUIRED and training stops until it is set, because 3-channel
+    # ImageNet statistics cannot apply to a 1-channel backbone.
+    #
+    #   3-channel example: [[0.485, 0.456, 0.406], [0.229, 0.224, 0.225]]
+    #   1-channel example: [[0.4984], [0.2483]]
+    normalization: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+
+training:
+  batch_size: 48

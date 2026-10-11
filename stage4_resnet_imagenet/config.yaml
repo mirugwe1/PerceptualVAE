@@ -1,0 +1,36 @@
+# Stage 4: ResNet-50, ImageNet weights
+#
+# The first rung of the domain ladder. Paired with stages 5 and 6 it gives three
+# architecturally identical ResNet-50s differing only in pretraining domain,
+# which is the only design that lets a difference be attributed to the domain
+# rather than to the network computing the features.
+#
+#   cd stage4_resnet_imagenet
+#   python ../common/calibrate_perceptual_weight.py --config config.yaml   # FIRST
+#   # put the recommended value in loss.perceptual.weight, then
+#   qsub train_vae.aqua
+#   qsub eval_vae.aqua
+
+_base_: ../common/base.yaml
+
+experiment:
+  name: vae_resnet50_imagenet
+
+paths:
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: resnet50_imagenet
+    layers: [layer1, layer2, layer3, layer4]
+    # PLACEHOLDER. The weight calibrated for one backbone does NOT transfer to
+    # another: every network has its own activation scale. With VGG-19 the raw
+    # perceptual term sat at 0.410 against a reconstruction term of 0.0039, a
+    # 105x mismatch, and w = 0.5 put it at 98 percent of the objective, left the
+    # KL term at 0.1 percent, disabled the information bottleneck and cost 0.08
+    # to 0.10 AUROC. Run the calibration script and replace this value.
+    weight: 0.01125
+
+training:
+  batch_size: 64

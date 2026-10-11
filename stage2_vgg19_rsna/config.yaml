@@ -1,0 +1,16 @@
+# RSNA Stage 2: perceptual term, stock ImageNet VGG-19.
+_base_: ../common/base_rsna.yaml
+
+experiment:
+  name: rsna_vae_vgg19_imagenet
+
+paths:
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: vgg19_imagenet
+
+training:
+  batch_size: 48            # VGG-19's relu1_2 is large; drop to 32 on OOM

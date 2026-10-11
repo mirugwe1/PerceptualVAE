@@ -1,0 +1,22 @@
+# RSNA Stage 3: perceptual term, chest X-ray fine-tuned VGG-19.
+# Identical to stage 2 except the backbone weights.
+_base_: ../common/base_rsna.yaml
+
+experiment:
+  name: rsna_vae_vgg19_cxr
+
+paths:
+  output_root: "runs"
+
+loss:
+  perceptual:
+    enabled: true
+    backbone: vgg19_cxr
+    checkpoint: "~/models/vgg19_cxr_finetune/runs/vgg19_cxr_finetune/20260908_162920/checkpoints/best_features.pt"
+    # finetune_vgg_cxr.py applied NO normalization, so the backbone was trained
+    # on inputs in [0, 1]. Identity reproduces that. Declared ONCE here; a
+    # duplicate key elsewhere in this block would silently override it.
+    normalization: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+
+training:
+  batch_size: 48

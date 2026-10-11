@@ -1,0 +1,17 @@
+# Stage 1: plain VAE, no perceptual term
+# This is the control. Stages 2 and 3 are measured against it, so run it
+# first and read its controls.json before starting either.
+#
+#   cd stage1_vae
+#   qsub train_vae.aqua
+#   qsub eval_vae.aqua
+
+_base_: ../common/base.yaml
+
+experiment:
+  name: vae_baseline
+
+paths:
+  # Each stage keeps its own runs/ folder beside this config.
+  output_root: "runs"
+
